@@ -91,6 +91,42 @@ class AllreduceBase : public IEngine {
                   "Allreduce failed");
   }
   /*!
+   * \brief performs approximate in-place Allreduce, on sendrecvbuf
+   *        this function is NOT thread-safe.
+   *        This function differs from Allreduce in a sense that pre-processing
+   *        is presented as a loop and the function can proceed to Allreduce
+   *        as soon as approx_ratio of data is met
+   * \param sendrecvbuf_ buffer for both sending and receiving data
+   * \param type_nbytes the number of bytes the type has
+   * \param count number of elements to be reduced
+   * \param reducer reduce function
+   * \param prepare_loop Lazy preprocessing loop, prepare_loop(prepare_arg, begin, end)
+   *                     will be called by the function before performing Allreduce
+   *                     in order to initialize the data in sendrecvbuf.
+   *                     If the result of Allreduce can be recovered directly, then prepare_loop will NOT be called
+   * \param prepare_arg argument used to pass into the lazy preprocessing function
+   * \param num_loop_iter the number of loop iteration to be called for a complete preprocessing
+   * \param approx_ratio approximate ratio we can tolerant
+   * \return the approximation ratio the actual computation carries out
+   */
+  virtual double ApproxAllreduce(void *sendrecvbuf_,
+                                 size_t type_nbytes,
+                                 size_t count,
+                                 ReduceFunction reducer,
+                                 PreprocLoopFunction prepare_loop,
+                                 void *prepare_arg,
+                                 size_t num_loop_iter,
+                                 double approx_ratio) {
+    double rapprox;
+    utils::Assert(TryExecLoop(prepare_loop, prepare_arg,
+                              num_loop_iter, approx_ratio, &rapprox) == kSuccess,
+                  "ApproxAllreduce failed");
+    utils::Assert(TryAllreduce(sendrecvbuf_,
+                               type_nbytes, count, reducer) == kSuccess,
+                  "ApproxAllreduce failed");
+    return rapprox;
+  }
+  /*!
    * \brief broadcast data from root to all nodes
    * \param sendrecvbuf_ buffer for both sending and recving data
    * \param size the size of the data to be broadcasted
@@ -344,6 +380,43 @@ class AllreduceBase : public IEngine {
       return plinks.size();
     }
   };
+  /*! \brief struct to execute preprocessing loops */
+  struct PreprocLoopExecutor {
+    // prepare loop
+    PreprocLoopFunction *prepare_loop;
+    // prepare argument
+    void *prepare_arg;
+    // number of iterations
+    size_t num_loop_iter;
+    // the current loop counter
+    size_t loop_counter;
+    // the loop step 
+    size_t loop_step;
+    // constructor
+    PreprocLoopExecutor(void) : loop_counter(0) {
+    }
+    /*!
+     * \brief run the loop for step
+     */
+    inline void Run(void) {
+      this->Run(loop_step);
+    }
+    /*!
+     * \brief run the loop for step
+     */
+    inline void Run(size_t step) {
+      size_t end = std::min(loop_counter + step,
+                            num_loop_iter);
+      if (end != loop_counter) {
+        (*prepare_loop)(prepare_arg, loop_counter, end);
+      }
+      loop_counter = end;
+    }
+    /*! \brief check of loop end */
+    inline bool LoopEnd(void) const {
+      return loop_counter == num_loop_iter;
+    }
+  };
   /*!
    * \brief initialize connection to the tracker
    * \return a socket that initializes the connection
@@ -367,13 +440,15 @@ class AllreduceBase : public IEngine {
    * \param type_nbytes the unit number of bytes the type have
    * \param count number of elements to be reduced
    * \param reducer reduce function
+   * \param exec pointer to executor class
    * \return this function can return kSuccess, kSockError, kGetExcept, see ReturnType for details
    * \sa ReturnType
    */
   ReturnType TryAllreduce(void *sendrecvbuf_,
                           size_t type_nbytes,
                           size_t count,
-                          ReduceFunction reducer);
+                          ReduceFunction reducer,
+                          PreprocLoopExecutor *exec = NULL);
   /*!
    * \brief broadcast data from root to all nodes, this function can fail,and will return the cause of failure
    * \param sendrecvbuf_ buffer for both sending and recving data
@@ -383,6 +458,22 @@ class AllreduceBase : public IEngine {
    * \sa ReturnType
    */
   ReturnType TryBroadcast(void *sendrecvbuf_, size_t size, int root);
+  /*!
+   * \brief execute the prepare_loop until approximate level is reached
+   * \param prepare_loop Lazy preprocessing loop, prepare_loop(prepare_arg, begin, end)
+   *                     will be called by the function before performing Allreduce
+   *                     in order to initialize the data in sendrecvbuf.
+   *                     If the result of Allreduce can be recovered directly, then prepare_loop will NOT be called
+   * \param prepare_arg argument used to pass into the lazy preprocessing function
+   * \param num_loop_iter the number of loop iteration to be called for a complete preprocessing
+   * \param approx_ratio approximate ratio we can tolerant
+   * \param out_rapprox hold the true approximation ration of the reduction
+   */
+  ReturnType TryExecLoop(PreprocLoopFunction prepare_loop,
+                         void *prepare_arg,
+                         size_t num_loop_iter,
+                         double approx_ratio,
+                         double *out_rapprox);
   /*!
    * \brief function used to report error when a link goes wrong 
    * \param link the pointer to the link who causes the error
@@ -420,6 +511,12 @@ class AllreduceBase : public IEngine {
   std::string host_uri;
   // uri of tracker
   std::string tracker_uri;
+  // relative running step
+  double approx_run_step;
+  // approximation check step
+  double approx_check_step;
+  // approximation check step
+  double approx_check_min_step;
   // port of tracker address
   int tracker_port;
   // port of slave process

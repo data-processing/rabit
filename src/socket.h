@@ -462,11 +462,12 @@ struct SelectHelper {
    * \param select_read whether to watch for read event
    * \param select_write whether to watch for write event
    * \param select_except whether to watch for exception event
-   * \param timeout specify timeout in micro-seconds(ms) if equals 0, means select will always block
+   * \param timeout specify timeout in micro-seconds(ms) if it is negative value, 
+   *                it means select will always block
    * \return number of active descriptors selected, 
    *         return -1 if error occurs
    */
-  inline int Select(long timeout = 0) {
+  inline int Select(long timeout = -1) {
     int ret =  Select_(static_cast<int>(maxfd + 1),
                        &read_set, &write_set, &except_set, timeout);
     if (ret == -1) {
@@ -481,7 +482,7 @@ struct SelectHelper {
 #if !defined(_WIN32)
     utils::Assert(maxfd < FD_SETSIZE, "maxdf must be smaller than FDSETSIZE");
 #endif
-    if (timeout == 0) {
+    if (timeout < 0) {
       return select(maxfd, rfds, wfds, efds, NULL);
     } else {
       timeval tm;

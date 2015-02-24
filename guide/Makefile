@@ -2,7 +2,7 @@ export CC  = gcc
 export CXX = g++
 export MPICXX = mpicxx
 export LDFLAGS= -pthread -lm -L../lib
-export CFLAGS = -Wall -O3 -msse2  -Wno-unknown-pragmas -fPIC -I../include 
+export CFLAGS = -Wall -O3 -msse2  -Wno-unknown-pragmas -fPIC -I../include -std=c++11
 
 .PHONY: clean all lib libmpi
 BIN = basic.rabit broadcast.rabit

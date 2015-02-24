@@ -27,6 +27,14 @@ class IEngine {
    * \param arg additional possible argument used to invoke the preprocessor
    */
   typedef void (PreprocFunction) (void *arg);
+  /*! 
+   * \brief Preprocessing loop function, that is called before AllReduce
+   *        used to prepare the data used by AllReduce
+   * \param arg additional possible argument used to invoke the preprocessor
+   * \param begin the beginning counter of the loop iteration
+   * \param end the end counter of the loop iteration
+   */
+  typedef void (PreprocLoopFunction) (void *arg, size_t begin, size_t end);
   /*!
    * \brief reduce function, the same form of MPI reduce function is used,
    *        to be compatible with MPI interface
@@ -59,6 +67,33 @@ class IEngine {
                          ReduceFunction reducer,
                          PreprocFunction prepare_fun = NULL,
                          void *prepare_arg = NULL) = 0;
+  /*!
+   * \brief performs approximate in-place Allreduce, on sendrecvbuf
+   *        this function is NOT thread-safe.
+   *        This function differs from Allreduce in a sense that pre-processing
+   *        is presented as a loop and the function can proceed to Allreduce
+   *        as soon as approx_ratio of data is met
+   * \param sendrecvbuf_ buffer for both sending and receiving data
+   * \param type_nbytes the number of bytes the type has
+   * \param count number of elements to be reduced
+   * \param reducer reduce function
+   * \param prepare_loop Lazy preprocessing loop, prepare_loop(prepare_arg, begin, end)
+   *                     will be called by the function before performing Allreduce
+   *                     in order to initialize the data in sendrecvbuf.
+   *                     If the result of Allreduce can be recovered directly, then prepare_loop will NOT be called
+   * \param prepare_arg argument used to pass into the lazy preprocessing function
+   * \param num_loop_iter the number of loop iteration to be called for a complete preprocessing
+   * \param approx_ratio approximate ratio we can tolerant
+   * \return the approximation ratio the actual computation carries out
+   */
+  virtual double ApproxAllreduce(void *sendrecvbuf_,
+                                 size_t type_nbytes,
+                                 size_t count,
+                                 ReduceFunction reducer,
+                                 PreprocLoopFunction prepare_loop,
+                                 void *prepare_arg,
+                                 size_t num_loop_iter,
+                                 double approx_ratio) = 0;
   /*!
    * \brief broadcasts data from root to every other node
    * \param sendrecvbuf_ buffer for both sending and receiving data

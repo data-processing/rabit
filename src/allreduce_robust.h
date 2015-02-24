@@ -214,8 +214,8 @@ class AllreduceRobust : public AllreduceBase {
     // reducer for Allreduce, get the result ActionSummary from all nodes
     inline static void Reducer(const void *src_, void *dst_,
                                int len, const MPI::Datatype &dtype) {
-      const ActionSummary *src = (const ActionSummary*)src_;
-      ActionSummary *dst = reinterpret_cast<ActionSummary*>(dst_);
+      const ActionSummary *src = static_cast<const ActionSummary*>(src_);
+      ActionSummary *dst = static_cast<ActionSummary*>(dst_);
       for (int i = 0; i < len; ++i) {
         int src_seqno = src[i].min_seqno();
         int dst_seqno = dst[i].min_seqno();

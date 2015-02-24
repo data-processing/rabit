@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "./allreduce_base.h"
+#include "../include/rabit/rabit-inl.h"
 
 namespace rabit {
 namespace engine {
@@ -29,6 +30,10 @@ AllreduceBase::AllreduceBase(void) {
   task_id = "NULL";
   err_link = NULL;
   this->SetParam("rabit_reduce_buffer", "256MB");
+  // running step for loop
+  approx_run_step = 0.001;
+  approx_check_step = 0.3;
+  approx_check_min_step = 0.01;
 }
 
 // initialization function
@@ -320,6 +325,7 @@ void AllreduceBase::ReConnectLinks(const char *cmd) {
  * \param type_nbytes the unit number of bytes the type have
  * \param count number of elements to be reduced
  * \param reducer reduce function
+ * \param exec pointer to executor class
  * \return this function can return kSuccess, kSockError, kGetExcept, see ReturnType for details
  * \sa ReturnType
  */
@@ -327,7 +333,8 @@ AllreduceBase::ReturnType
 AllreduceBase::TryAllreduce(void *sendrecvbuf_,
                             size_t type_nbytes,
                             size_t count,
-                            ReduceFunction reducer) {
+                            ReduceFunction reducer,
+                            PreprocLoopExecutor *exec) {
   RefLinkVector &links = tree_links;
   if (links.size() == 0 || count == 0) return kSuccess;
   // total size of message
@@ -386,8 +393,17 @@ AllreduceBase::TryAllreduce(void *sendrecvbuf_,
     }
     // finish runing allreduce
     if (finished) break;
-    // select must return
-    selecter.Select();
+    if (exec != NULL) {      
+      exec->Run();
+      if (exec->LoopEnd()) {
+        selecter.Select();
+      } else {
+        // use non-blocking selection
+        selecter.Select(0);
+      }
+    } else {
+      selecter.Select();  
+    }
     // exception handling
     for (int i = 0; i < nlink; ++i) {
       // recive OOB message from some link
@@ -583,6 +599,93 @@ AllreduceBase::TryBroadcast(void *sendrecvbuf_, size_t total_size, int root) {
         }
       }
     }
+  }
+  return kSuccess;
+}
+// struct to record loop status
+struct LoopStatus {
+  // number of nodes that left
+  size_t num_left;
+  // maximum number of left loop
+  size_t max_left;
+  // number of nodes that finishs the job
+  size_t num_finish;
+  explicit LoopStatus(size_t num_left)
+      : num_left(num_left), max_left(num_left),
+        num_finish(num_left == 0) {
+  }
+  // reducer for Allreduce, get the result ActionSummary from all nodes
+  inline static void Reducer(const void *src_, void *dst_,
+                             int len, const MPI::Datatype &dtype) {
+    const LoopStatus *src = reinterpret_cast<const LoopStatus*>(src_);
+    LoopStatus *dst = reinterpret_cast<LoopStatus*>(dst_);
+    dst->num_left += src->num_left;
+    dst->max_left = std::max(dst->max_left, src->max_left);
+    dst->num_finish += src->num_finish;
+  }
+};
+/*!
+ * \brief execute the prepare_loop until approximate level is reached
+ * \param prepare_loop Lazy preprocessing loop, prepare_loop(prepare_arg, begin, end)
+ *                     will be called by the function before performing Allreduce
+ *                     in order to initialize the data in sendrecvbuf.
+ *                     If the result of Allreduce can be recovered directly, then prepare_loop will NOT be called
+ * \param prepare_arg argument used to pass into the lazy preprocessing function
+ * \param num_loop_iter the number of loop iteration to be called for a complete preprocessing
+ * \param approx_ratio approximate ratio we can tolerant
+ */
+AllreduceBase::ReturnType
+AllreduceBase::TryExecLoop(PreprocLoopFunction prepare_loop,
+                           void *prepare_arg,
+                           size_t num_loop_iter,
+                           double approx_ratio,
+                           double *out_rapprox) {
+  // total number of resources to complete
+  size_t num_total = num_loop_iter;
+  ReturnType ret = TryAllreduce(&num_total, sizeof(num_total), 1,
+                                op::Reducer<op::Sum, size_t>);
+  if (ret != kSuccess) return ret;
+  PreprocLoopExecutor exec;
+  exec.prepare_loop = prepare_loop;
+  exec.prepare_arg = prepare_arg;
+  exec.num_loop_iter = num_loop_iter;
+  exec.loop_step = static_cast<size_t>(num_total * approx_run_step / world_size);
+  if (exec.loop_step == 0) exec.loop_step = 1;
+  // number of data pts left
+  size_t num_left = num_total;
+  size_t approx_gap = num_total - static_cast<size_t>(approx_ratio * num_total);
+  if (approx_gap == 0) {
+    exec.Run(num_loop_iter);
+    if (out_rapprox != NULL) {
+      *out_rapprox = 1.0;
+    }
+    return kSuccess;
+  }
+  // loop check
+  while (num_left != 0) {
+    size_t step = static_cast<size_t>(num_left * approx_check_step / world_size);
+    step = std::max(step, static_cast<size_t>(num_total * approx_check_min_step / world_size));
+    if (step < exec.loop_step) step = exec.loop_step;
+    exec.Run(step);
+    LoopStatus status(num_loop_iter - exec.loop_counter);
+    ReturnType ret = TryAllreduce(&status, sizeof(status), 1,
+                                  LoopStatus::Reducer, &exec);
+    if (ret != kSuccess) return ret;
+    num_left = status.num_left;
+    if (num_left < approx_gap &&
+        status.num_finish > world_size * 0.5) {
+      break;
+    }
+  }
+  if (num_left != 0) {
+    LoopStatus status(num_loop_iter - exec.loop_counter);
+    ReturnType ret = TryAllreduce(&status, sizeof(status), 1,
+                                  LoopStatus::Reducer);
+    if (ret != kSuccess) return ret;
+    num_left = status.num_left;
+  }
+  if (out_rapprox != NULL) {
+    *out_rapprox = static_cast<double>(num_total - num_left) / num_total;
   }
   return kSuccess;
 }

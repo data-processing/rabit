@@ -161,6 +161,28 @@ inline void Allreduce(DType *sendrecvbuf, size_t count,
 template<typename OP, typename DType>
 inline void Allreduce(DType *sendrecvbuf, size_t count,
                       std::function<void()> prepare_fun);
+/*
+ * \brief performs approximate Allreduce, on sendrecvbuf
+ *        with a prepare loop function specified by a lambda function
+ *
+ * \param sendrecvbuf buffer for both sending and receiving data
+ * \param count number of elements to be reduced
+ * \param prepare_loop Lazy preprocessing loop, prepare_loop(begin, end)
+ *                     will be called by the function before performing Allreduce
+ *                     in order to initialize the data in sendrecvbuf.
+ *                     If the result of Allreduce can be recovered directly, then prepare_loop will NOT be called
+ * \param num_loop_iter the number of loop iteration to be called for a complete preprocessing
+ * \param approx_ratio approximate ratio we can tolerant
+ * \tparam OP see namespace op, reduce operator 
+ * \tparam DType data type
+ * \tparam FLoop the type of loop function
+ */
+template<typename OP, typename DType, typename FLoop>
+inline double ApproxAllreduce(DType *sendrecvbuf,
+                              size_t count,
+                              FLoop preproc_loop,
+                              size_t num_loop_iter,
+                              double approx_ratio);
 #endif  // C++11
 /*!
  * \brief loads the latest check point

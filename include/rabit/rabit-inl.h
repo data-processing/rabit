@@ -153,8 +153,31 @@ inline void InvokeLambda_(void *fun) {
 }
 template<typename OP, typename DType>
 inline void Allreduce(DType *sendrecvbuf, size_t count, std::function<void()> prepare_fun) {
-  engine::Allreduce_(sendrecvbuf, sizeof(DType), count, op::Reducer<OP,DType>,
+  engine::Allreduce_(sendrecvbuf, sizeof(DType), count, op::Reducer<OP, DType>,
                      engine::mpi::GetType<DType>(), OP::kType, InvokeLambda_, &prepare_fun);
+}
+
+inline void InvokeLambda3_(void *fun, size_t begin, size_t end) {
+  (*static_cast<std::function<void(size_t, size_t)>*>(fun))(begin, end);
+}
+template<typename OP, typename DType, typename FLoop>
+inline double ApproxAllreduce(DType *sendrecvbuf,
+                              size_t count,
+                              FLoop preproc_loop,
+                              size_t num_loop_iter,
+                              double approx_ratio) {
+  std::function<void(size_t, size_t)> floop =
+      [&preproc_loop](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      preproc_loop(i);
+    }
+  };
+  double ret = engine::GetEngine()->ApproxAllreduce
+      (sendrecvbuf, sizeof(DType), 
+       count, op::Reducer<OP, DType>,
+       InvokeLambda3_,
+       &floop, num_loop_iter, approx_ratio);
+  return ret;
 }
 #endif // C++11
 
